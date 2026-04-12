@@ -1,0 +1,107 @@
+use anyhow::{Context, Result};
+use reqwest::Client;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+use crate::config::CliConfig;
+
+pub struct ApiClient {
+    client: Client,
+    base_url: String,
+    token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiError {
+    pub error: String,
+    pub code: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.error, self.code)
+    }
+}
+
+impl ApiClient {
+    pub fn new(config: &CliConfig) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: config.server.url.trim_end_matches('/').to_string(),
+            token: config.auth.token.clone(),
+        }
+    }
+
+    pub fn with_token(mut self, token: String) -> Self {
+        self.token = Some(token);
+        self
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/api/v1{}", self.base_url, path)
+    }
+
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let mut req = self.client.get(self.url(path));
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let response = req.send().await.context("request failed")?;
+        self.handle_response(response).await
+    }
+
+    pub async fn post<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let mut req = self.client.post(self.url(path)).json(body);
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let response = req.send().await.context("request failed")?;
+        self.handle_response(response).await
+    }
+
+    pub async fn put<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let mut req = self.client.put(self.url(path)).json(body);
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let response = req.send().await.context("request failed")?;
+        self.handle_response(response).await
+    }
+
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        let mut req = self.client.delete(self.url(path));
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let response = req.send().await.context("request failed")?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let err: ApiError = response.json().await.context("failed to parse error")?;
+            Err(anyhow::anyhow!("{}", err))
+        }
+    }
+
+    async fn handle_response<T: DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T> {
+        if response.status().is_success() {
+            response.json().await.context("failed to parse response")
+        } else {
+            let status = response.status();
+            let err: Result<ApiError, _> = response.json().await;
+            match err {
+                Ok(api_err) => Err(anyhow::anyhow!("{}", api_err)),
+                Err(_) => Err(anyhow::anyhow!("request failed with status {}", status)),
+            }
+        }
+    }
+}
