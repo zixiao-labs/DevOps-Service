@@ -130,6 +130,14 @@ pub async fn list(
     page: i64,
     per_page: i64,
 ) -> Result<(Vec<IssueRow>, i64)> {
+    // Validate pagination inputs
+    if page <= 0 {
+        return Err(anyhow::anyhow!("invalid pagination: page must be greater than 0"));
+    }
+    if per_page <= 0 {
+        return Err(anyhow::anyhow!("invalid pagination: per_page must be greater than 0"));
+    }
+
     let offset = (page - 1) * per_page;
 
     let count_row = sqlx::query_as::<_, CountRow>(
@@ -173,6 +181,16 @@ pub async fn update(
     state: Option<&str>,
     assignee_id: Option<Option<Uuid>>,
 ) -> Result<IssueRow> {
+    // Validate state if provided
+    if let Some(s) = state {
+        if s != "open" && s != "closed" {
+            return Err(anyhow::anyhow!(
+                "invalid state '{}': must be 'open' or 'closed'",
+                s
+            ));
+        }
+    }
+
     let (set_assignee, assignee_value) = match assignee_id {
         Some(inner) => (true, inner),
         None => (false, None),

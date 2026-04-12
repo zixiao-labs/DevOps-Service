@@ -85,11 +85,18 @@ impl ApiClient {
             Ok(())
         } else {
             let status = response.status();
-            match response.json::<ApiError>().await {
+            // Try to parse as JSON first
+            let body_bytes = response.bytes().await.context("failed to read response body")?;
+            match serde_json::from_slice::<ApiError>(&body_bytes) {
                 Ok(api_err) => Err(anyhow::anyhow!("{}", api_err)),
                 Err(_) => {
-                    // Fall back to reading response text if JSON parse fails
-                    Err(anyhow::anyhow!("request failed with status {}", status))
+                    // Fall back to raw body text if JSON parse fails
+                    let body_text = String::from_utf8_lossy(&body_bytes);
+                    Err(anyhow::anyhow!(
+                        "request failed with status {}: {}",
+                        status,
+                        body_text
+                    ))
                 }
             }
         }

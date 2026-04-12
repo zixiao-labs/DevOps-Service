@@ -199,11 +199,21 @@ pub async fn update(
     body: Option<&str>,
     state: Option<&str>,
 ) -> Result<MrRow> {
-    // Validate that state is not being set to 'merged' - callers should use set_merged() instead
-    if state == Some("merged") {
-        return Err(anyhow::anyhow!(
-            "cannot set state to 'merged' via update(); use set_merged() instead"
-        ));
+    // Validate state if provided
+    if let Some(s) = state {
+        // Reject merged state - callers should use set_merged() instead
+        if s == "merged" {
+            return Err(anyhow::anyhow!(
+                "cannot set state to 'merged' via update(); use set_merged() instead"
+            ));
+        }
+        // Whitelist valid MR states
+        if s != "open" && s != "closed" {
+            return Err(anyhow::anyhow!(
+                "invalid state '{}': must be 'open', 'closed', or use set_merged() for 'merged'",
+                s
+            ));
+        }
     }
 
     let row = sqlx::query_as::<_, MrRow>(
@@ -235,7 +245,7 @@ pub async fn set_merged(pool: &PgPool, id: Uuid, merged_by: Uuid) -> Result<MrRo
             merged_by = $2,
             merged_at = NOW(),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND state <> 'merged' AND merged_at IS NULL
         RETURNING id, repo_id, number, title, body, state, source_branch, target_branch, author_id, merged_by, merged_at, ci_status, created_at, updated_at
         "#,
     )

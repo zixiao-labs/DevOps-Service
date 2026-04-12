@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(sqlx::FromRow, Debug, Clone, serde::Serialize)]
+#[derive(sqlx::FromRow, Clone, serde::Serialize)]
 pub struct UserRow {
     pub id: Uuid,
     pub username: String,
@@ -25,6 +25,13 @@ pub async fn create_user(
     password_hash: &str,
     display_name: &str,
 ) -> Result<UserRow> {
+    // Validate username does not contain '@' to ensure find_by_username_or_email works correctly
+    if username.contains('@') {
+        return Err(anyhow::anyhow!(
+            "invalid username: '@' character is not allowed in usernames"
+        ));
+    }
+
     let row = sqlx::query_as::<_, UserRow>(
         r#"
         INSERT INTO users (id, username, email, password_hash, display_name, is_admin, created_at, updated_at)
@@ -128,7 +135,7 @@ pub async fn update_profile(
     display_name: Option<&str>,
     bio: Option<&str>,
     avatar_url: Option<&str>,
-) -> Result<UserRow> {
+) -> Result<Option<UserRow>> {
     let row = sqlx::query_as::<_, UserRow>(
         r#"
         UPDATE users
@@ -144,7 +151,7 @@ pub async fn update_profile(
     .bind(display_name)
     .bind(bio)
     .bind(avatar_url)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
 
     Ok(row)
