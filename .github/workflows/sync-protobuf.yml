@@ -1,0 +1,61 @@
+name: Sync Protobuf Generated Code
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/raidian/proto/**'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Manual trigger reason'
+        required: false
+        default: 'Manual protobuf regeneration'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can diff correctly if needed.
+          fetch-depth: 0
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate protobuf Rust code
+        run: |
+          cd crates/raidian
+          bash generate.sh
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          if git diff --quiet -- crates/raidian/src/generated.rs; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push updated generated code
+        if: steps.git-check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add crates/raidian/src/generated.rs
+          git commit -m "chore(raidian): auto-regenerate protobuf code [skip ci]"
+          git push
