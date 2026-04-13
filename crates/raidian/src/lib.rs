@@ -1,12 +1,25 @@
+/// Re-export of `prost::Message` for encoding / decoding protobuf messages.
 pub use prost::Message;
 
 /// Generated Protobuf message types for the YuXu DevOps platform API.
+///
+/// This module contains the raw structs emitted by `prost-build`. Consumers
+/// can also use the organized submodules below for cleaner imports.
 #[rustfmt::skip]
 #[allow(clippy::all)]
 mod generated;
 pub use generated::*;
 
 /// Authentication and user profile messages.
+///
+/// # Example
+/// ```
+/// use raidian::auth::LoginRequest;
+/// let req = LoginRequest {
+///     username_or_email: "alice@example.com".into(),
+///     password: "secret".into(),
+/// };
+/// ```
 pub mod auth {
     pub use crate::generated::{
         AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UserProfile,
@@ -45,7 +58,11 @@ pub mod member {
     };
 }
 
-/// Real-time collaboration messages.
+/// Real-time collaboration messages (yrs/CRDT over WebSocket).
+///
+/// These types are used by the YuXu binary WebSocket protocol for
+/// multi-player editor sessions in downstream consumers such as Zed
+/// and the Logos IDE.
 pub mod collaboration {
     pub use crate::generated::{
         CollabAwareness, CollabJoinRequest, CollabJoinResponse, CollabParticipant,
