@@ -10,7 +10,7 @@
 
 前端React+自研chen-the-dawnstreak+MUI+自研Nasti打包
 
-后端Rust (Cargo Workspace, Axum, sqlx, PostgreSQL, git2, yrs CRDT)
+后端Rust (Cargo Workspace, Axum, sqlx, PostgreSQL, git2, ~~yrs CRDT~~ 手搓CRDT)
 
 ## 仓库结构
 
