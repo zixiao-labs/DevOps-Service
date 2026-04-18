@@ -72,20 +72,30 @@ impl CollabHub {
     }
 
     /// Remove the connection and every piece of shared state that referenced
-    /// it. Returns a summary so the caller can notify remaining peers.
+    /// it, then notify remaining peers (`UnshareProject` for any project this
+    /// connection hosted). Returns a summary so callers (tests, metrics) can
+    /// observe what changed.
     ///
-    /// Projects whose host disappeared are unshared entirely — the server
-    /// cannot keep serving LSP/Git/file requests for them. Rooms with a
-    /// vanished host stay alive with the remaining participants; a future
-    /// improvement could promote a new host.
+    /// Centralising the broadcast here means every eviction path
+    /// (slow-client overflow, normal disconnect, future `LeaveRoom` cleanup)
+    /// notifies peers without depending on the caller to consume the
+    /// returned `DisconnectEffects`.
     pub fn deregister(&self, conn_id: ConnectionId) -> DisconnectEffects {
         let mut effects = DisconnectEffects::default();
 
         self.connections.remove(&conn_id);
-        if let Some((_, user)) = self.conn_users.remove(&conn_id)
-            && let Some(mut v) = self.user_to_conns.get_mut(&user)
-        {
-            v.retain(|id| *id != conn_id);
+        if let Some((_, user)) = self.conn_users.remove(&conn_id) {
+            // Drop the empty bucket once the last connection for this user
+            // disappears, otherwise long-lived servers accumulate one map
+            // entry per historical user.
+            let mut should_remove = false;
+            if let Some(mut v) = self.user_to_conns.get_mut(&user) {
+                v.retain(|id| *id != conn_id);
+                should_remove = v.is_empty();
+            }
+            if should_remove {
+                self.user_to_conns.remove(&user);
+            }
         }
 
         // Remove from every room's participant list; record which rooms were touched.
@@ -126,21 +136,49 @@ impl CollabHub {
             proj.collaborators.retain(|c| c.conn_id != conn_id);
         }
 
+        // Fan out the disconnect notifications. `broadcast_internal` won't
+        // recurse into deregister on its own overflow — we just log; the slow
+        // peer will be evicted on its own next failed enqueue.
+        for pid in &effects.removed_project_ids {
+            let env = super::envelope::unsolicited(pb::envelope::Payload::UnshareProject(
+                pb::UnshareProject { project_id: *pid },
+            ));
+            self.broadcast_internal(&effects.remaining_guest_conns, &env);
+        }
+
         effects
     }
 
-    /// Enqueue an envelope to a single connection. If the per-connection queue
-    /// is full (slow/stalled peer) the connection is torn down rather than
-    /// letting the outbound backlog grow without bound.
-    pub fn send_to(&self, conn_id: ConnectionId, env: &pb::Envelope) {
+    fn try_enqueue(
+        &self,
+        conn_id: ConnectionId,
+        bytes: Bytes,
+    ) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         let Some(conn) = self.connections.get(&conn_id).map(|c| c.clone()) else {
-            return;
+            return Ok(());
         };
+        conn.tx.try_send(bytes)
+    }
+
+    /// Broadcast used from inside `deregister`. Doesn't recurse on overflow.
+    fn broadcast_internal(&self, conn_ids: &[ConnectionId], env: &pb::Envelope) {
         let bytes = super::envelope::encode(env);
-        if let Err(mpsc::error::TrySendError::Full(_)) = conn.tx.try_send(bytes) {
+        for id in conn_ids {
+            if let Err(mpsc::error::TrySendError::Full(_)) = self.try_enqueue(*id, bytes.clone()) {
+                tracing::warn!(conn_id = id, "disconnect notice dropped; queue full");
+            }
+        }
+    }
+
+    /// Enqueue an envelope to a single connection. If the per-connection queue
+    /// is full (slow/stalled peer) the connection is torn down — and the
+    /// resulting `DisconnectEffects` is applied (peers notified) by
+    /// `deregister` itself.
+    pub fn send_to(&self, conn_id: ConnectionId, env: &pb::Envelope) {
+        let bytes = super::envelope::encode(env);
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.try_enqueue(conn_id, bytes) {
             tracing::warn!(conn_id, "outbound queue full; disconnecting slow client");
-            drop(conn);
-            self.deregister(conn_id);
+            let _ = self.deregister(conn_id);
         }
     }
 
@@ -148,10 +186,7 @@ impl CollabHub {
         let bytes = super::envelope::encode(env);
         let mut full: Vec<ConnectionId> = Vec::new();
         for id in conn_ids {
-            let Some(conn) = self.connections.get(id).map(|c| c.clone()) else {
-                continue;
-            };
-            if let Err(mpsc::error::TrySendError::Full(_)) = conn.tx.try_send(bytes.clone()) {
+            if let Err(mpsc::error::TrySendError::Full(_)) = self.try_enqueue(*id, bytes.clone()) {
                 full.push(*id);
             }
         }
@@ -160,7 +195,7 @@ impl CollabHub {
                 conn_id = id,
                 "outbound queue full; disconnecting slow client"
             );
-            self.deregister(id);
+            let _ = self.deregister(id);
         }
     }
 

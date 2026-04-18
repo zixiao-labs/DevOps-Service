@@ -10,6 +10,16 @@ fn load_with_override(server: Option<String>) -> Result<config::Config> {
     Ok(cfg)
 }
 
+/// Persist `token`/`username` from an auth response without turning a
+/// `--server` override into a sticky config entry. The override is documented
+/// as per-invocation, so we reload the on-disk config before saving.
+fn persist_auth(token: Option<String>, username: Option<String>) -> Result<()> {
+    let mut disk = config::load()?;
+    disk.token = token;
+    disk.username = username;
+    config::save(&disk)
+}
+
 pub async fn register(
     server: Option<String>,
     username: String,
@@ -17,7 +27,7 @@ pub async fn register(
     password: String,
     display_name: Option<String>,
 ) -> Result<()> {
-    let mut cfg = load_with_override(server)?;
+    let cfg = load_with_override(server)?;
     let client = Client::new(&cfg);
     let resp: AuthResponse = client
         .post(
@@ -30,15 +40,14 @@ pub async fn register(
             },
         )
         .await?;
-    cfg.token = Some(resp.token);
-    cfg.username = resp.user.as_ref().map(|u| u.username.clone());
-    config::save(&cfg)?;
-    println!("registered as {}", cfg.username.as_deref().unwrap_or("?"));
+    let saved_username = resp.user.as_ref().map(|u| u.username.clone());
+    persist_auth(Some(resp.token), saved_username.clone())?;
+    println!("registered as {}", saved_username.as_deref().unwrap_or("?"));
     Ok(())
 }
 
 pub async fn login(server: Option<String>, ident: String, password: String) -> Result<()> {
-    let mut cfg = load_with_override(server)?;
+    let cfg = load_with_override(server)?;
     let client = Client::new(&cfg);
     let resp: AuthResponse = client
         .post(
@@ -49,10 +58,9 @@ pub async fn login(server: Option<String>, ident: String, password: String) -> R
             },
         )
         .await?;
-    cfg.token = Some(resp.token);
-    cfg.username = resp.user.as_ref().map(|u| u.username.clone());
-    config::save(&cfg)?;
-    println!("logged in as {}", cfg.username.as_deref().unwrap_or("?"));
+    let saved_username = resp.user.as_ref().map(|u| u.username.clone());
+    persist_auth(Some(resp.token), saved_username.clone())?;
+    println!("logged in as {}", saved_username.as_deref().unwrap_or("?"));
     Ok(())
 }
 

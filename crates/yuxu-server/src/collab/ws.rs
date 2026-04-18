@@ -60,16 +60,10 @@ async fn run(state: AppState, socket: WebSocket) {
         }
     }
 
-    // Disconnect cleanup: if this socket was hosting any projects, tell the
-    // remaining guests before dropping state.
-    let effects = hub.deregister(conn_id);
-    for pid in &effects.removed_project_ids {
-        let notice =
-            envelope::unsolicited(pb::envelope::Payload::UnshareProject(pb::UnshareProject {
-                project_id: *pid,
-            }));
-        hub.broadcast(&effects.remaining_guest_conns, &notice);
-    }
+    // Disconnect cleanup. `deregister` now broadcasts `UnshareProject` to
+    // every remaining guest of any project this socket hosted, so we don't
+    // need to fan out here ourselves.
+    let _ = hub.deregister(conn_id);
     writer.abort();
 }
 
