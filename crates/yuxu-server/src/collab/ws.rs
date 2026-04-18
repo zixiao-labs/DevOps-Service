@@ -253,11 +253,7 @@ async fn handle_envelope(state: &AppState, conn_id: ConnectionId, env: pb::Envel
                 None => {
                     hub.send_to(
                         conn_id,
-                        &envelope::error(
-                            req_id,
-                            pb::error::Code::NotFound,
-                            "project not found",
-                        ),
+                        &envelope::error(req_id, pb::error::Code::NotFound, "project not found"),
                     );
                     return;
                 }
@@ -322,20 +318,19 @@ async fn handle_envelope(state: &AppState, conn_id: ConnectionId, env: pb::Envel
                 // existing replica_id instead of allocating a fresh one.
                 // Without this we'd accumulate duplicate entries on every
                 // retry and inflate next_replica_id.
-                let replica_id = if let Some(me) =
-                    proj.collaborators.iter().find(|c| c.conn_id == conn_id)
-                {
-                    me.replica_id
-                } else {
-                    let rid = proj.alloc_replica();
-                    proj.collaborators.push(ProjectCollaborator {
-                        conn_id,
-                        user_id: user_id.clone(),
-                        replica_id: rid,
-                        is_host: false,
-                    });
-                    rid
-                };
+                let replica_id =
+                    if let Some(me) = proj.collaborators.iter().find(|c| c.conn_id == conn_id) {
+                        me.replica_id
+                    } else {
+                        let rid = proj.alloc_replica();
+                        proj.collaborators.push(ProjectCollaborator {
+                            conn_id,
+                            user_id: user_id.clone(),
+                            replica_id: rid,
+                            is_host: false,
+                        });
+                        rid
+                    };
                 // Exclude self from the `existing` list. The joining client
                 // doesn't need to be told about itself, and on the rejoin
                 // path self is already in `collaborators`.

@@ -170,11 +170,10 @@ impl CollabHub {
             if targets.is_empty() {
                 continue;
             }
-            let env = super::envelope::unsolicited(pb::envelope::Payload::RoomUpdated(
-                pb::RoomUpdated {
+            let env =
+                super::envelope::unsolicited(pb::envelope::Payload::RoomUpdated(pb::RoomUpdated {
                     room: Some(room_pb),
-                },
-            ));
+                }));
             self.broadcast_internal(&targets, &env);
         }
 
