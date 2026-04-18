@@ -317,10 +317,32 @@ async fn handle_envelope(state: &AppState, conn_id: ConnectionId, env: pb::Envel
                     );
                     return;
                 }
-                let replica_id = proj.alloc_replica();
+                // Idempotent rejoin: if this connection is already a
+                // collaborator (e.g. client retried JoinProject), reuse the
+                // existing replica_id instead of allocating a fresh one.
+                // Without this we'd accumulate duplicate entries on every
+                // retry and inflate next_replica_id.
+                let replica_id = if let Some(me) =
+                    proj.collaborators.iter().find(|c| c.conn_id == conn_id)
+                {
+                    me.replica_id
+                } else {
+                    let rid = proj.alloc_replica();
+                    proj.collaborators.push(ProjectCollaborator {
+                        conn_id,
+                        user_id: user_id.clone(),
+                        replica_id: rid,
+                        is_host: false,
+                    });
+                    rid
+                };
+                // Exclude self from the `existing` list. The joining client
+                // doesn't need to be told about itself, and on the rejoin
+                // path self is already in `collaborators`.
                 let existing: Vec<pb::Collaborator> = proj
                     .collaborators
                     .iter()
+                    .filter(|c| c.conn_id != conn_id)
                     .map(|c| pb::Collaborator {
                         peer_id: Some(pb::PeerId {
                             owner_id: 1,
@@ -334,12 +356,6 @@ async fn handle_envelope(state: &AppState, conn_id: ConnectionId, env: pb::Envel
                     })
                     .collect();
                 let worktrees_pb = proj.worktrees.clone();
-                proj.collaborators.push(ProjectCollaborator {
-                    conn_id,
-                    user_id: user_id.clone(),
-                    replica_id,
-                    is_host: false,
-                });
                 (replica_id, proj.host_conn_id, existing, worktrees_pb)
             };
             hub.send_to(
