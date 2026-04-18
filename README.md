@@ -1,4 +1,4 @@
-# Yuxupalace-Sercer
+# Yuxupalace-Server
 
 ~~Zixiao Labs DevOps Service（代号：玉虚宫）~~ 不想重新起名了，直接叫玉虚宫吧
 
