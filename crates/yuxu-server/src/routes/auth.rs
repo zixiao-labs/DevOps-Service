@@ -101,7 +101,6 @@ struct GithubUser {
     login: String,
     name: Option<String>,
     avatar_url: Option<String>,
-    email: Option<String>,
     bio: Option<String>,
 }
 
@@ -165,27 +164,26 @@ pub async fn github_callback(
     )
     .await?;
 
-    let email = match gh_user.email.clone() {
-        Some(e) if !e.is_empty() => e,
-        _ => {
-            let emails: Vec<GithubEmail> = send_github_json(
-                http.get("https://api.github.com/user/emails")
-                    .bearer_auth(&access_token)
-                    .header("Accept", "application/vnd.github+json"),
-                "github /user/emails",
+    // Always resolve the identity via /user/emails: gh_user.email is the
+    // user's *publicly visible* address which may not be verified. Requiring
+    // primary && verified here keeps the conflict check and account creation
+    // tied to an email GitHub has actually proven the user controls.
+    let emails: Vec<GithubEmail> = send_github_json(
+        http.get("https://api.github.com/user/emails")
+            .bearer_auth(&access_token)
+            .header("Accept", "application/vnd.github+json"),
+        "github /user/emails",
+    )
+    .await?;
+    let email = emails
+        .into_iter()
+        .find(|e| e.primary && e.verified)
+        .map(|e| e.email)
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "no primary verified email on github account; please add one".into(),
             )
-            .await?;
-            emails
-                .into_iter()
-                .find(|e| e.primary && e.verified)
-                .map(|e| e.email)
-                .ok_or_else(|| {
-                    AppError::BadRequest(
-                        "no primary verified email on github account; please add one".into(),
-                    )
-                })?
-        }
-    };
+        })?;
 
     let github_id = gh_user.id.to_string();
 
@@ -236,14 +234,46 @@ pub async fn github_callback(
         is_admin: false,
         created_at: now,
         updated_at: now,
-        github_id: Some(github_id),
+        github_id: Some(github_id.clone()),
     };
-    db::users::insert(&state.db, &rec).await?;
+    if let Err(err) = db::users::insert(&state.db, &rec).await {
+        // If a concurrent callback for the same GitHub id raced us past
+        // find_by_github_id and inserted first, recover by re-reading and
+        // signing in as that user instead of returning a 500. Any other
+        // unique-violation (email, username) means a genuine conflict we
+        // can't safely paper over, so propagate the error.
+        if matches!(&err, AppError::Sqlx(e) if is_unique_violation_on(e, "github_id"))
+            && let Some(existing) = db::users::find_by_github_id(&state.db, &github_id).await?
+        {
+            let token = state
+                .jwt
+                .issue(&existing.id, &existing.username, existing.is_admin)?;
+            return Ok(Json(AuthResponse {
+                token,
+                user: Some(profile_from_record(&existing)),
+            }));
+        }
+        return Err(err);
+    }
     let token = state.jwt.issue(&rec.id, &rec.username, rec.is_admin)?;
     Ok(Json(AuthResponse {
         token,
         user: Some(profile_from_record(&rec)),
     }))
+}
+
+/// Detect a unique-constraint violation on the column whose name appears in
+/// the DB's error message. Works across sqlite (error code "2067", message
+/// "UNIQUE constraint failed: users.github_id") and postgres (SQLSTATE
+/// "23505", constraint name like "idx_users_github_id"). The column-hint
+/// check is a substring match on the message so we only recover from the
+/// specific collision we intended to.
+fn is_unique_violation_on(err: &sqlx::Error, column_hint: &str) -> bool {
+    let Some(db_err) = err.as_database_error() else {
+        return false;
+    };
+    let unique = matches!(db_err.code().as_deref(), Some("2067") | Some("23505"));
+    unique && db_err.message().contains(column_hint)
 }
 
 /// Check HTTP status before attempting JSON decode so a 4xx/5xx from GitHub

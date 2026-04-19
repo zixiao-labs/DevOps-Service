@@ -34,7 +34,13 @@ function isUserProfile(x: unknown): x is UserProfile {
 export function loadSession(): Session | null {
   const token = localStorage.getItem(TOKEN_KEY);
   const userRaw = localStorage.getItem(USER_KEY);
-  if (!token || !userRaw) return null;
+  if (!token || !userRaw) {
+    // Half a session (token without user or vice versa) is unusable and
+    // tends to happen after interrupted logouts; scrub both keys so the
+    // next login starts from a clean slate.
+    if (token || userRaw) clearSession();
+    return null;
+  }
   try {
     const parsed: unknown = JSON.parse(userRaw);
     if (!isUserProfile(parsed)) {
