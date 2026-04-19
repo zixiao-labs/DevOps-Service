@@ -1,6 +1,8 @@
 use crate::{app_state::AppState, db, error::AppError, middleware::auth::AuthUser};
 use axum::{Json, extract::State};
-use raidian::{AuthResponse, LoginRequest, RegisterRequest, UserProfile};
+use base64::{Engine as _, engine::general_purpose};
+use raidian::{AuthResponse, GithubOauthRequest, LoginRequest, RegisterRequest, UserProfile};
+use rand::RngCore;
 use yuxu_core::auth::{hash_password, verify_password};
 
 fn profile_from_record(u: &db::users::UserRecord) -> UserProfile {
@@ -49,6 +51,7 @@ pub async fn register(
         is_admin: false,
         created_at: now,
         updated_at: now,
+        github_id: None,
     };
     db::users::insert(&state.db, &rec).await?;
     let token = state.jwt.issue(&rec.id, &rec.username, rec.is_admin)?;
@@ -83,4 +86,259 @@ pub async fn me(
         .await?
         .ok_or_else(|| AppError::NotFound("user".into()))?;
     Ok(Json(profile_from_record(&user)))
+}
+
+#[derive(serde::Deserialize)]
+struct GithubAccessTokenResp {
+    access_token: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubUser {
+    id: u64,
+    login: String,
+    name: Option<String>,
+    avatar_url: Option<String>,
+    bio: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubEmail {
+    email: String,
+    primary: bool,
+    verified: bool,
+}
+
+pub async fn github_callback(
+    State(state): State<AppState>,
+    Json(req): Json<GithubOauthRequest>,
+) -> Result<Json<AuthResponse>, AppError> {
+    let client_id = state
+        .config
+        .github_client_id
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("github oauth not configured".into()))?;
+    let client_secret = state
+        .config
+        .github_client_secret
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("github oauth not configured".into()))?;
+    if req.code.trim().is_empty() {
+        return Err(AppError::BadRequest("missing code".into()));
+    }
+    // `state` is validated by the frontend against sessionStorage. The server
+    // receives it for defense-in-depth logging but does not store per-flow
+    // state — by the time the code reaches us, GitHub has already bound the
+    // code to our client_id.
+
+    let http = &state.http;
+
+    let token_resp: GithubAccessTokenResp = send_github_json(
+        http.post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .form(&[
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("code", req.code.as_str()),
+            ]),
+        "github token exchange",
+    )
+    .await?;
+
+    if let Some(err) = token_resp.error {
+        let desc = token_resp.error_description.unwrap_or_default();
+        tracing::warn!(%err, %desc, "github returned oauth error");
+        return Err(AppError::Unauthorized("github oauth failed".into()));
+    }
+    let access_token = token_resp
+        .access_token
+        .ok_or_else(|| AppError::Unauthorized("github oauth failed".into()))?;
+
+    let gh_user: GithubUser = send_github_json(
+        http.get("https://api.github.com/user")
+            .bearer_auth(&access_token)
+            .header("Accept", "application/vnd.github+json"),
+        "github /user",
+    )
+    .await?;
+
+    // Always resolve the identity via /user/emails: gh_user.email is the
+    // user's *publicly visible* address which may not be verified. Requiring
+    // primary && verified here keeps the conflict check and account creation
+    // tied to an email GitHub has actually proven the user controls.
+    let emails: Vec<GithubEmail> = send_github_json(
+        http.get("https://api.github.com/user/emails")
+            .bearer_auth(&access_token)
+            .header("Accept", "application/vnd.github+json"),
+        "github /user/emails",
+    )
+    .await?;
+    let email = emails
+        .into_iter()
+        .find(|e| e.primary && e.verified)
+        .map(|e| e.email)
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "no primary verified email on github account; please add one".into(),
+            )
+        })?;
+
+    let github_id = gh_user.id.to_string();
+
+    // Already linked? Sign in directly.
+    if let Some(existing) = db::users::find_by_github_id(&state.db, &github_id).await? {
+        let token = state
+            .jwt
+            .issue(&existing.id, &existing.username, existing.is_admin)?;
+        return Ok(Json(AuthResponse {
+            token,
+            user: Some(profile_from_record(&existing)),
+        }));
+    }
+
+    // Refuse to auto-link an existing yuxu account just because the GitHub
+    // email claim matches. GitHub verifies that the user controls the email
+    // *at GitHub*, not that they own the pre-existing yuxu account using the
+    // same address — so auto-linking would let anyone who can sign up at
+    // GitHub with a targeted email take over a password account. The user
+    // must sign in with their existing credentials and opt in to linking
+    // GitHub from account settings (TODO: expose that endpoint).
+    if db::users::find_by_username_or_email(&state.db, &email)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "an account with this email already exists; sign in with your password, then link GitHub from settings".into(),
+        ));
+    }
+
+    // Otherwise create a new account. Password login is disabled for
+    // OAuth-only accounts; the hash is a random high-entropy value that
+    // verify_password can never match.
+    let username = ensure_unique_username(&state.db, &gh_user.login).await?;
+    let now = chrono::Utc::now().timestamp();
+    let mut random = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut random);
+    let placeholder_pw = general_purpose::STANDARD_NO_PAD.encode(random);
+
+    let rec = db::users::UserRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        username,
+        email,
+        display_name: gh_user.name.unwrap_or_default(),
+        avatar_url: gh_user.avatar_url.unwrap_or_default(),
+        bio: gh_user.bio.unwrap_or_default(),
+        password_hash: hash_password(&placeholder_pw)?,
+        is_admin: false,
+        created_at: now,
+        updated_at: now,
+        github_id: Some(github_id.clone()),
+    };
+    if let Err(err) = db::users::insert(&state.db, &rec).await {
+        // If a concurrent callback for the same GitHub id raced us past
+        // find_by_github_id and inserted first, recover by re-reading and
+        // signing in as that user instead of returning a 500. Any other
+        // unique-violation (email, username) means a genuine conflict we
+        // can't safely paper over, so propagate the error.
+        if matches!(&err, AppError::Sqlx(e) if is_unique_violation_on(e, "github_id"))
+            && let Some(existing) = db::users::find_by_github_id(&state.db, &github_id).await?
+        {
+            let token = state
+                .jwt
+                .issue(&existing.id, &existing.username, existing.is_admin)?;
+            return Ok(Json(AuthResponse {
+                token,
+                user: Some(profile_from_record(&existing)),
+            }));
+        }
+        return Err(err);
+    }
+    let token = state.jwt.issue(&rec.id, &rec.username, rec.is_admin)?;
+    Ok(Json(AuthResponse {
+        token,
+        user: Some(profile_from_record(&rec)),
+    }))
+}
+
+/// Detect a unique-constraint violation on the column whose name appears in
+/// the DB's error message. Works across sqlite (error code "2067", message
+/// "UNIQUE constraint failed: users.github_id") and postgres (SQLSTATE
+/// "23505", constraint name like "idx_users_github_id"). The column-hint
+/// check is a substring match on the message so we only recover from the
+/// specific collision we intended to.
+fn is_unique_violation_on(err: &sqlx::Error, column_hint: &str) -> bool {
+    let Some(db_err) = err.as_database_error() else {
+        return false;
+    };
+    let unique = matches!(db_err.code().as_deref(), Some("2067") | Some("23505"));
+    unique && db_err.message().contains(column_hint)
+}
+
+/// Check HTTP status before attempting JSON decode so a 4xx/5xx from GitHub
+/// surfaces as an HTTP error with the real body snippet, not as a misleading
+/// "missing field `id`" JSON decode failure.
+///
+/// Note: GitHub's OAuth token-exchange endpoint intentionally returns 200 with
+/// an `error` field in the JSON body on application-level failures, so the
+/// caller still needs to inspect that field after decode.
+async fn send_github_json<T: serde::de::DeserializeOwned>(
+    req: reqwest::RequestBuilder,
+    ctx: &'static str,
+) -> Result<T, AppError> {
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{ctx}: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(500).collect();
+        tracing::warn!(%status, %snippet, "{} returned non-success", ctx);
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "{ctx}: HTTP {status}: {snippet}"
+        )));
+    }
+    resp.json()
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("decode {ctx}: {e}")))
+}
+
+/// If `preferred` is already in use, append `-N` until a free username is found.
+async fn ensure_unique_username(
+    pool: &crate::db::DbPool,
+    preferred: &str,
+) -> Result<String, AppError> {
+    // GitHub caps logins at 39 chars but we also want suffix room for `-N`
+    // collision-breaking and a hard limit against pathological inputs.
+    const MAX_BASE_LEN: usize = 32;
+    let sanitized: String = preferred
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(MAX_BASE_LEN)
+        .collect();
+    let base = if sanitized.is_empty() {
+        "gh".to_string()
+    } else {
+        sanitized
+    };
+    if db::users::find_by_username_or_email(pool, &base)
+        .await?
+        .is_none()
+    {
+        return Ok(base);
+    }
+    for n in 1..1000 {
+        let candidate = format!("{base}-{n}");
+        if db::users::find_by_username_or_email(pool, &candidate)
+            .await?
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict(
+        "could not pick a unique username".into(),
+    ))
 }

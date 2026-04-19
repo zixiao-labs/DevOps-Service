@@ -10,4 +10,7 @@ pub struct AppState {
     pub db: DbPool,
     pub jwt: Arc<JwtService>,
     pub hub: Arc<CollabHub>,
+    // `reqwest::Client` is internally ref-counted and cheap to clone; sharing
+    // it reuses the HTTP connection pool across OAuth callbacks.
+    pub http: reqwest::Client,
 }

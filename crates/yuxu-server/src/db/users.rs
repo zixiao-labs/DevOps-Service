@@ -15,12 +15,13 @@ pub struct UserRecord {
     pub is_admin: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    pub github_id: Option<String>,
 }
 
 pub async fn insert(pool: &DbPool, u: &UserRecord) -> Result<(), AppError> {
     sqlx::query(
-        "INSERT INTO users (id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        "INSERT INTO users (id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     )
     .bind(&u.id)
     .bind(&u.username)
@@ -32,6 +33,7 @@ pub async fn insert(pool: &DbPool, u: &UserRecord) -> Result<(), AppError> {
     .bind(u.is_admin)
     .bind(u.created_at)
     .bind(u.updated_at)
+    .bind(u.github_id.as_deref())
     .execute(pool)
     .await
     .map_err(AppError::from)?;
@@ -43,7 +45,7 @@ pub async fn find_by_username_or_email(
     ident: &str,
 ) -> Result<Option<UserRecord>, AppError> {
     let row = sqlx::query(
-        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at FROM users WHERE username = $1 OR email = $1",
+        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE username = $1 OR email = $1",
     )
     .bind(ident)
     .fetch_optional(pool)
@@ -57,7 +59,7 @@ pub async fn find_by_username_or_email(
 
 pub async fn find_by_id(pool: &DbPool, id: &str) -> Result<Option<UserRecord>, AppError> {
     let row = sqlx::query(
-        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at FROM users WHERE id = $1",
+        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -67,6 +69,51 @@ pub async fn find_by_id(pool: &DbPool, id: &str) -> Result<Option<UserRecord>, A
         Some(r) => Ok(Some(user_from_row(&r)?)),
         None => Ok(None),
     }
+}
+
+pub async fn find_by_github_id(
+    pool: &DbPool,
+    github_id: &str,
+) -> Result<Option<UserRecord>, AppError> {
+    let row = sqlx::query(
+        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE github_id = $1",
+    )
+    .bind(github_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::from)?;
+    match row {
+        Some(r) => Ok(Some(user_from_row(&r)?)),
+        None => Ok(None),
+    }
+}
+
+// Unused until the settings-based "link GitHub to my account" endpoint is
+// wired up; see the TODO in routes/auth.rs. Keeping it here (rather than
+// reinventing the guard at callsite) so the github_id update always goes
+// through the same conditional WHERE.
+#[allow(dead_code)]
+pub async fn link_github_id(pool: &DbPool, user_id: &str, github_id: &str) -> Result<(), AppError> {
+    // Only bind when the row has no github_id yet, or is already bound to the
+    // same id (idempotent retries). Prevents an attacker-controlled callback
+    // from silently re-binding a user who is already tied to a different
+    // GitHub account.
+    let result = sqlx::query(
+        "UPDATE users SET github_id = $1, updated_at = $2 \
+         WHERE id = $3 AND (github_id IS NULL OR github_id = $1)",
+    )
+    .bind(github_id)
+    .bind(chrono::Utc::now().timestamp())
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .map_err(AppError::from)?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::Conflict(
+            "user is already linked to a different github account".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "postgres")]
@@ -82,6 +129,7 @@ fn user_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRecord, AppError> {
         is_admin: row.try_get("is_admin")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        github_id: row.try_get("github_id")?,
     })
 }
 
@@ -98,5 +146,6 @@ fn user_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, AppError> 
         is_admin: row.try_get::<i64, _>("is_admin")? != 0,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        github_id: row.try_get("github_id")?,
     })
 }
