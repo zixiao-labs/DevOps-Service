@@ -6,6 +6,6 @@
 *.ts @HwlloChen @Amiya167 @zhangqiling-1103
 *.tsx @HwlloChen @Amiya167 @zhangqiling-1103 
 # Owners for files in the docs directory
-docs/* @Amiya167
+docs/** @Amiya167
 # Owners for backend
 *.rs @Amiya167 @zhangqiling-1103
