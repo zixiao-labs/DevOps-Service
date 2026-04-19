@@ -4,7 +4,7 @@
 
 开发者的一站式工作台，集成Git仓库，Issue，合并请求，CI/CD，基于CRDT的实时协作
 
-支持[Logos](https://github.com/zixiao-labs/logos)、~~[Zed](https://github.com/amiya167/zed)~~ 由于官方暂时Out Of Scope，Zed支持将通过扩展程序提供、CLI客户端，并会推出手机客户端
+支持[Logos](https://github.com/zixiao-labs/logos)、~~[Zed](https://github.com/amiya167/zed)~~ 由于官方暂时Out Of Scope，~~Zed支持将通过扩展程序提供~~ 等不到视觉API了，还是用Zed同款的GPUI手搓一个Git Client吧、CLI客户端，并会推出手机客户端
 
 ## 技术栈
 
