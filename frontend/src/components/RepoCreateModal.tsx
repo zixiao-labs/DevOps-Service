@@ -27,7 +27,8 @@ export default function RepoCreateModal({ onCreated }: Props) {
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    const fd = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const fd = new FormData(form);
     const payload: CreateRepositoryRequest = {
       name: String(fd.get('name') ?? '').trim(),
       description: String(fd.get('description') ?? '').trim(),
@@ -46,6 +47,7 @@ export default function RepoCreateModal({ onCreated }: Props) {
       onCreated(created);
       setIsOpen(false);
       setIsPrivate(false);
+      form.reset();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '创建仓库失败');
     } finally {

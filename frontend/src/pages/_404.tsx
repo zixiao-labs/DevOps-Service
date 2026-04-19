@@ -1,7 +1,8 @@
-import { Link } from 'chen-the-dawnstreak';
+import { useNavigate } from 'chen-the-dawnstreak';
 import { Button, Card } from '@heroui/react';
 
 export default function NotFound() {
+  const navigate = useNavigate();
   return (
     <div
       className="flex min-h-screen items-center justify-center p-6"
@@ -13,9 +14,7 @@ export default function NotFound() {
           <Card.Description>你访问的页面已下线或从未存在。</Card.Description>
         </Card.Header>
         <Card.Footer>
-          <Link to="/">
-            <Button>返回首页</Button>
-          </Link>
+          <Button onPress={() => navigate('/')}>返回首页</Button>
         </Card.Footer>
       </Card>
     </div>

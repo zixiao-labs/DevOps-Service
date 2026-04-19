@@ -26,10 +26,15 @@ export function authHeader(): Record<string, string> {
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...authHeader(),
     ...((init?.headers as Record<string, string>) ?? {}),
   };
+  // Only declare a JSON content type when we're actually sending a body. Adding
+  // it to GET/HEAD requests is harmless but triggers CORS preflights that the
+  // server didn't need to satisfy.
+  if (init?.body != null && !('Content-Type' in headers)) {
+    headers['Content-Type'] = 'application/json';
+  }
   const res = await fetch(url, { ...init, headers });
   if (res.status === 204) return undefined as T;
 

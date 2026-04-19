@@ -1,6 +1,8 @@
 use crate::{app_state::AppState, db, error::AppError, middleware::auth::AuthUser};
 use axum::{Json, extract::State};
+use base64::{Engine as _, engine::general_purpose};
 use raidian::{AuthResponse, GithubOauthRequest, LoginRequest, RegisterRequest, UserProfile};
+use rand::RngCore;
 use yuxu_core::auth::{hash_password, verify_password};
 
 fn profile_from_record(u: &db::users::UserRecord) -> UserProfile {
@@ -132,10 +134,7 @@ pub async fn github_callback(
     // state — by the time the code reaches us, GitHub has already bound the
     // code to our client_id.
 
-    let http = reqwest::Client::builder()
-        .user_agent("yuxu-server/github-oauth")
-        .build()
-        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("build http client: {e}")))?;
+    let http = &state.http;
 
     let token_resp: GithubAccessTokenResp = http
         .post("https://github.com/login/oauth/access_token")
@@ -210,16 +209,20 @@ pub async fn github_callback(
         }));
     }
 
-    // Try to link an existing password account by email.
-    if let Some(existing) = db::users::find_by_username_or_email(&state.db, &email).await? {
-        db::users::link_github_id(&state.db, &existing.id, &github_id).await?;
-        let token = state
-            .jwt
-            .issue(&existing.id, &existing.username, existing.is_admin)?;
-        return Ok(Json(AuthResponse {
-            token,
-            user: Some(profile_from_record(&existing)),
-        }));
+    // Refuse to auto-link an existing yuxu account just because the GitHub
+    // email claim matches. GitHub verifies that the user controls the email
+    // *at GitHub*, not that they own the pre-existing yuxu account using the
+    // same address — so auto-linking would let anyone who can sign up at
+    // GitHub with a targeted email take over a password account. The user
+    // must sign in with their existing credentials and opt in to linking
+    // GitHub from account settings (TODO: expose that endpoint).
+    if db::users::find_by_username_or_email(&state.db, &email)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "an account with this email already exists; sign in with your password, then link GitHub from settings".into(),
+        ));
     }
 
     // Otherwise create a new account. Password login is disabled for
@@ -228,9 +231,7 @@ pub async fn github_callback(
     let username = ensure_unique_username(&state.db, &gh_user.login).await?;
     let now = chrono::Utc::now().timestamp();
     let mut random = [0u8; 32];
-    use rand::RngCore;
     rand::thread_rng().fill_bytes(&mut random);
-    use base64::{Engine as _, engine::general_purpose};
     let placeholder_pw = general_purpose::STANDARD_NO_PAD.encode(random);
 
     let rec = db::users::UserRecord {

@@ -32,7 +32,7 @@ export default function Sidebar() {
           </span>
         </div>
       </div>
-      <nav className="flex flex-col gap-1">
+      <nav className="flex flex-col gap-1" aria-label="主导航">
         {items.map((item) => (
           <NavLink
             key={item.to}

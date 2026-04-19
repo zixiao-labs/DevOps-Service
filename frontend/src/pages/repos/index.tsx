@@ -15,7 +15,8 @@ export default function ReposIndex() {
       .then(setRepos)
       .catch((err) => {
         setError(err instanceof ApiError ? err.message : '加载仓库列表失败');
-        setRepos([]);
+        // Leave `repos` untouched so we don't flash the empty-state copy on
+        // top of the error banner — only the Alert shows.
       });
   }, []);
 
@@ -44,9 +45,7 @@ export default function ReposIndex() {
             <Alert.Title>{error}</Alert.Title>
           </Alert.Content>
         </Alert>
-      ) : null}
-
-      {repos === null ? (
+      ) : repos === null ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-32 w-full rounded-2xl" />

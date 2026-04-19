@@ -22,6 +22,27 @@ self.addEventListener('fetch', (event) => {
   // Never cache API / websocket traffic — must always hit the server.
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/rpc')) return;
 
+  // Navigations: network-first. We want fresh HTML so users see the latest
+  // build, and on offline we fall back to any cached response (and finally
+  // to the cached app shell at '/') so deep links still render something.
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.status === 200 && res.type === 'basic') {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(req).then((hit) => hit || caches.match('/')),
+        ),
+    );
+    return;
+  }
+
+  // Static assets (scripts, styles, images): cache-first.
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;

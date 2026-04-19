@@ -10,17 +10,7 @@ declare module '@heroui/styles/css';
 interface ImportMetaEnv {
   readonly VITE_LOGIN_URL?: string;
   readonly VITE_API_BASE_URL?: string;
-  readonly PROD: boolean;
-  readonly DEV: boolean;
-  readonly MODE: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
-
-interface ImportMetaEnv {
-  readonly VITE_LOGIN_URL?: string;
+  readonly BASE_URL: string;
   readonly PROD: boolean;
   readonly DEV: boolean;
   readonly MODE: string;

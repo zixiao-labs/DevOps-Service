@@ -1,7 +1,6 @@
 import { Avatar, Button, Tooltip } from '@heroui/react';
 import { useSession, logout } from '../lib/session-store';
-
-const LOGIN_URL = import.meta.env.VITE_LOGIN_URL || 'http://localhost:5173/login';
+import { LOGIN_URL } from '../lib/auth';
 
 export default function Header() {
   const state = useSession();

@@ -17,7 +17,13 @@ export default function RepoDetail() {
   useEffect(() => {
     if (!fullName) return;
     setError(null);
-    apiFetch<Repository>(`/api/repos/${fullName}`)
+    // Re-encode each segment so '/' stays structural while literal '%', '#',
+    // '?', space, etc. in owner/repo names don't break the request.
+    const encodedFullName = fullName
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/');
+    apiFetch<Repository>(`/api/repos/${encodedFullName}`)
       .then(setRepo)
       .catch((err) => {
         setError(err instanceof ApiError ? err.message : '加载仓库失败');
@@ -26,12 +32,17 @@ export default function RepoDetail() {
 
   if (!fullName) {
     return (
-      <Alert status="danger">
-        <Alert.Indicator />
-        <Alert.Content>
-          <Alert.Title>路径缺少仓库名</Alert.Title>
-        </Alert.Content>
-      </Alert>
+      <div className="flex flex-col gap-4">
+        <Breadcrumbs>
+          <Link to="/repos">仓库</Link>
+        </Breadcrumbs>
+        <Alert status="danger">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>路径缺少仓库名</Alert.Title>
+          </Alert.Content>
+        </Alert>
+      </div>
     );
   }
 

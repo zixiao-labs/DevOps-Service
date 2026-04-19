@@ -6,6 +6,7 @@ mod error;
 mod middleware;
 mod routes;
 
+use anyhow::Context;
 use app_state::AppState;
 use axum::{Router, http::HeaderValue, routing::get};
 use std::sync::Arc;
@@ -26,6 +27,11 @@ async fn main() -> anyhow::Result<()> {
     let db = db::connect(&cfg.database_url).await?;
     db::run_migrations(&db).await?;
 
+    let http = reqwest::Client::builder()
+        .user_agent("yuxu-server")
+        .build()
+        .context("build shared reqwest client")?;
+
     let state = AppState {
         config: cfg.clone(),
         db,
@@ -34,9 +40,10 @@ async fn main() -> anyhow::Result<()> {
             cfg.jwt_ttl_seconds,
         )),
         hub: Arc::new(collab::CollabHub::new()),
+        http,
     };
 
-    let cors = build_cors_layer(cfg.cors_allowed_origins.as_deref());
+    let cors = build_cors_layer(cfg.cors_allowed_origins.as_deref())?;
 
     let app = Router::new()
         .merge(routes::router())
@@ -56,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 /// allows any origin (suitable for local dev only). An empty/unset value
 /// disables CORS entirely so production deployments behind a reverse proxy
 /// don't advertise cross-origin access by accident.
-fn build_cors_layer(raw: Option<&str>) -> CorsLayer {
+fn build_cors_layer(raw: Option<&str>) -> anyhow::Result<CorsLayer> {
     use axum::http::Method;
     use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
     let base = CorsLayer::new()
@@ -70,17 +77,24 @@ fn build_cors_layer(raw: Option<&str>) -> CorsLayer {
         ])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT])
         .allow_credentials(false);
-    match raw {
+    let layer = match raw {
         None | Some("") => base,
         Some("*") => base.allow_origin(AllowOrigin::any()),
         Some(list) => {
+            // Surface misconfiguration loudly: a typo in YUXU_CORS_ORIGINS
+            // would otherwise silently produce a CORS layer that rejects
+            // every preflight.
             let origins: Vec<HeaderValue> = list
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
-                .filter_map(|s| s.parse::<HeaderValue>().ok())
-                .collect();
+                .map(|s| {
+                    s.parse::<HeaderValue>()
+                        .with_context(|| format!("invalid CORS origin: {s:?}"))
+                })
+                .collect::<anyhow::Result<_>>()?;
             base.allow_origin(origins)
         }
-    }
+    };
+    Ok(layer)
 }

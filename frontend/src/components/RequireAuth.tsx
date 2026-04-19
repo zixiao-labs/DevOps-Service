@@ -1,11 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Spinner } from '@heroui/react';
 import { apiFetch, ApiError } from '../lib/api';
-import { loadSession, clearSession } from '../lib/auth';
+import { loadSession, clearSession, redirectToLogin } from '../lib/auth';
 import { setSession } from '../lib/session-store';
 import type { UserProfile } from '../lib/types';
-
-const LOGIN_URL = import.meta.env.VITE_LOGIN_URL || 'http://localhost:5173/login';
 
 interface Props {
   children: ReactNode;
@@ -47,9 +45,4 @@ export default function RequireAuth({ children }: Props) {
   }
 
   return <>{children}</>;
-}
-
-function redirectToLogin() {
-  const ret = encodeURIComponent(window.location.href);
-  window.location.href = `${LOGIN_URL}?return=${ret}`;
 }

@@ -88,14 +88,31 @@ pub async fn find_by_github_id(
     }
 }
 
+// Unused until the settings-based "link GitHub to my account" endpoint is
+// wired up; see the TODO in routes/auth.rs. Keeping it here (rather than
+// reinventing the guard at callsite) so the github_id update always goes
+// through the same conditional WHERE.
+#[allow(dead_code)]
 pub async fn link_github_id(pool: &DbPool, user_id: &str, github_id: &str) -> Result<(), AppError> {
-    sqlx::query("UPDATE users SET github_id = $1, updated_at = $2 WHERE id = $3")
-        .bind(github_id)
-        .bind(chrono::Utc::now().timestamp())
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(AppError::from)?;
+    // Only bind when the row has no github_id yet, or is already bound to the
+    // same id (idempotent retries). Prevents an attacker-controlled callback
+    // from silently re-binding a user who is already tied to a different
+    // GitHub account.
+    let result = sqlx::query(
+        "UPDATE users SET github_id = $1, updated_at = $2 \
+         WHERE id = $3 AND (github_id IS NULL OR github_id = $1)",
+    )
+    .bind(github_id)
+    .bind(chrono::Utc::now().timestamp())
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .map_err(AppError::from)?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::Conflict(
+            "user is already linked to a different github account".into(),
+        ));
+    }
     Ok(())
 }
 
