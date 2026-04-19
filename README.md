@@ -36,7 +36,7 @@ devops-service/
 | [yuxu-cli](crates/yuxu-cli) | ✅ MVP | Rust CLI，支持所有核心功能 |
 | [Zed 面板](https://github.com/amiya167/zed) | ✅ MVP | Zed 编辑器内嵌 DevOps 面板（无Auth） |
 | [Logos IDE](https://github.com/zixiao-labs/logos) | 🚧 计划中 | 第一方 IDE 客户端，见 [集成文档](docs/logos-integration.md) |
-| 手机客户端 | 🔜 计划中 | iOS/Android |
+| 手机客户端 | 🔜 计划中 | iOS/Android（React Native+chen-the-dawnstreak） |
 
 ## 核心功能
 
