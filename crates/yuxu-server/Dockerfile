@@ -8,7 +8,7 @@
 # cargo-chef lets us cache the dependency build separately from the app code —
 # without it, any source edit forces a full recompile (~8+ min on cold cache).
 
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.91
 ARG DEBIAN_VERSION=bookworm
 
 # ---- Stage 1: cargo-chef base ----
