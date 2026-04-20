@@ -7,7 +7,7 @@
 # listening hostname/IP are all resolved at run time — no rebuild per site.
 
 # ---- Stage 1: build the static bundle ----
-FROM node:20-alpine AS builder
+FROM node:25-alpine AS builder
 WORKDIR /app
 
 # Install deps first with only the manifests copied, so code edits don't
