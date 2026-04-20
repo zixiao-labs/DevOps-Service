@@ -16,12 +16,13 @@ pub struct UserRecord {
     pub created_at: i64,
     pub updated_at: i64,
     pub github_id: Option<String>,
+    pub zixiao_cloud_id: Option<String>,
 }
 
 pub async fn insert(pool: &DbPool, u: &UserRecord) -> Result<(), AppError> {
     sqlx::query(
-        "INSERT INTO users (id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        "INSERT INTO users (id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id, zixiao_cloud_id) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
     )
     .bind(&u.id)
     .bind(&u.username)
@@ -34,19 +35,22 @@ pub async fn insert(pool: &DbPool, u: &UserRecord) -> Result<(), AppError> {
     .bind(u.created_at)
     .bind(u.updated_at)
     .bind(u.github_id.as_deref())
+    .bind(u.zixiao_cloud_id.as_deref())
     .execute(pool)
     .await
     .map_err(AppError::from)?;
     Ok(())
 }
 
+const SELECT_COLS: &str = "id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id, zixiao_cloud_id";
+
 pub async fn find_by_username_or_email(
     pool: &DbPool,
     ident: &str,
 ) -> Result<Option<UserRecord>, AppError> {
-    let row = sqlx::query(
-        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE username = $1 OR email = $1",
-    )
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS} FROM users WHERE username = $1 OR email = $1"
+    ))
     .bind(ident)
     .fetch_optional(pool)
     .await
@@ -58,13 +62,11 @@ pub async fn find_by_username_or_email(
 }
 
 pub async fn find_by_id(pool: &DbPool, id: &str) -> Result<Option<UserRecord>, AppError> {
-    let row = sqlx::query(
-        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(AppError::from)?;
+    let row = sqlx::query(&format!("SELECT {SELECT_COLS} FROM users WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(AppError::from)?;
     match row {
         Some(r) => Ok(Some(user_from_row(&r)?)),
         None => Ok(None),
@@ -75,10 +77,27 @@ pub async fn find_by_github_id(
     pool: &DbPool,
     github_id: &str,
 ) -> Result<Option<UserRecord>, AppError> {
-    let row = sqlx::query(
-        "SELECT id, username, email, display_name, avatar_url, bio, password_hash, is_admin, created_at, updated_at, github_id FROM users WHERE github_id = $1",
-    )
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS} FROM users WHERE github_id = $1"
+    ))
     .bind(github_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::from)?;
+    match row {
+        Some(r) => Ok(Some(user_from_row(&r)?)),
+        None => Ok(None),
+    }
+}
+
+pub async fn find_by_zixiao_cloud_id(
+    pool: &DbPool,
+    zixiao_cloud_id: &str,
+) -> Result<Option<UserRecord>, AppError> {
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS} FROM users WHERE zixiao_cloud_id = $1"
+    ))
+    .bind(zixiao_cloud_id)
     .fetch_optional(pool)
     .await
     .map_err(AppError::from)?;
@@ -116,6 +135,30 @@ pub async fn link_github_id(pool: &DbPool, user_id: &str, github_id: &str) -> Re
     Ok(())
 }
 
+#[allow(dead_code)]
+pub async fn link_zixiao_cloud_id(
+    pool: &DbPool,
+    user_id: &str,
+    zixiao_cloud_id: &str,
+) -> Result<(), AppError> {
+    let result = sqlx::query(
+        "UPDATE users SET zixiao_cloud_id = $1, updated_at = $2 \
+         WHERE id = $3 AND (zixiao_cloud_id IS NULL OR zixiao_cloud_id = $1)",
+    )
+    .bind(zixiao_cloud_id)
+    .bind(chrono::Utc::now().timestamp())
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .map_err(AppError::from)?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::Conflict(
+            "user is already linked to a different zixiao cloud account".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "postgres")]
 fn user_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRecord, AppError> {
     Ok(UserRecord {
@@ -130,6 +173,7 @@ fn user_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRecord, AppError> {
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         github_id: row.try_get("github_id")?,
+        zixiao_cloud_id: row.try_get("zixiao_cloud_id")?,
     })
 }
 
@@ -147,5 +191,6 @@ fn user_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, AppError> 
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         github_id: row.try_get("github_id")?,
+        zixiao_cloud_id: row.try_get("zixiao_cloud_id")?,
     })
 }
