@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'chen-the-dawnstreak';
 import { Alert, Button, Card, Spinner } from '@heroui/react';
 import { apiFetch, ApiError } from '../../lib/api';
+import { sanitizeReturnTarget } from '../../lib/auth';
 import { setSession } from '../../lib/session-store';
 import type {
   AuthResponse,
@@ -30,7 +31,7 @@ export default function OauthCallback() {
     const providerError = params.get('error_description') || params.get('error');
 
     const provider = sessionStorage.getItem(PROVIDER_KEY);
-    const returnTo = sessionStorage.getItem(RETURN_KEY) || '/';
+    const returnTo = sanitizeReturnTarget(sessionStorage.getItem(RETURN_KEY));
     sessionStorage.removeItem(PROVIDER_KEY);
     sessionStorage.removeItem(RETURN_KEY);
 

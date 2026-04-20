@@ -12,6 +12,7 @@ import {
   TextField,
 } from '@heroui/react';
 import { apiFetch, ApiError } from '../lib/api';
+import { sanitizeReturnTarget } from '../lib/auth';
 import { setSession } from '../lib/session-store';
 import type {
   AuthConfigResponse,
@@ -32,7 +33,7 @@ const RETURN_KEY = 'yuxu_oauth_return';
  */
 export default function Login() {
   const [params] = useSearchParams();
-  const returnTo = params.get('return') || '/';
+  const returnTo = sanitizeReturnTarget(params.get('return'));
 
   const [cfg, setCfg] = useState<AuthConfigResponse | null>(null);
   const [cfgError, setCfgError] = useState<string | null>(null);

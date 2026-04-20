@@ -70,3 +70,20 @@ export function redirectToLogin(returnTo: string = window.location.href): void {
   url.searchParams.set('return', returnTo);
   window.location.href = url.toString();
 }
+
+// A return target is safe only if it is a same-origin relative path: it must
+// start with a single `/` and not a second `/` or `\` (both of which browsers
+// can resolve against a foreign origin). This rule also rejects schemed URLs
+// like `javascript:…` and `https://evil.com/…`, because their colon sits
+// before any slash, so they fail the leading-`/` check.
+export function isSafeRedirect(target: string | null | undefined): target is string {
+  if (!target) return false;
+  if (target[0] !== '/') return false;
+  if (target[1] === '/' || target[1] === '\\') return false;
+  return true;
+}
+
+/** Return `target` if it passes `isSafeRedirect`, else `/`. */
+export function sanitizeReturnTarget(target: string | null | undefined): string {
+  return isSafeRedirect(target) ? target : '/';
+}
