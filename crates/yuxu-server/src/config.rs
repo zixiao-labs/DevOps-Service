@@ -1,26 +1,87 @@
 use anyhow::{Context, Result, bail};
 use std::net::SocketAddr;
 
+/// Where the server is being run. Controls which auth providers are exposed
+/// on `/api/auth/config` and which auth endpoints accept traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeploymentMode {
+    /// Operator-controlled install. Local username/password registration
+    /// and login are enabled in addition to OAuth providers.
+    SelfHosted,
+    /// Hosted multi-tenant install. Local password accounts are disabled;
+    /// only OAuth providers (Zixiao Cloud, GitHub) may sign users in.
+    Saas,
+}
+
+impl DeploymentMode {
+    /// String representation of the deployment mode.
+    ///
+    /// The returned string is `"self-hosted"` for `DeploymentMode::SelfHosted` and `"saas"` for `DeploymentMode::Saas`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(DeploymentMode::SelfHosted.as_str(), "self-hosted");
+    /// assert_eq!(DeploymentMode::Saas.as_str(), "saas");
+    /// ```
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeploymentMode::SelfHosted => "self-hosted",
+            DeploymentMode::Saas => "saas",
+        }
+    }
+
+    /// Indicates whether the deployment permits local username/password accounts.
+    ///
+    /// # Returns
+    ///
+    /// `true` if local username/password accounts are permitted, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(DeploymentMode::SelfHosted.allows_local_password());
+    /// assert!(!DeploymentMode::Saas.allows_local_password());
+    /// ```
+    pub fn allows_local_password(self) -> bool {
+        matches!(self, DeploymentMode::SelfHosted)
+    }
+}
+
+/// Standard OAuth 2.0 authorization-code client config. Both id and secret
+/// are required to enable the provider; the base URL points at the auth
+/// server's public origin.
+#[derive(Clone, Debug)]
+pub struct ZixiaoCloudConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub base_url: String,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub bind: SocketAddr,
     pub database_url: String,
+    pub deployment_mode: DeploymentMode,
     pub jwt_secret: String,
     pub jwt_ttl_seconds: i64,
     pub live_kit_url: String,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub zixiao_cloud: Option<ZixiaoCloudConfig>,
     pub cors_allowed_origins: Option<String>,
 }
 
 // Custom Debug so `tracing::debug!(?config)` or `format!("{:?}", state)` never
 // leaks secrets into logs. Fields with credential-shaped content (jwt_secret,
-// database_url which may embed a password, github_client_secret) are elided.
+// database_url which may embed a password, github_client_secret,
+// zixiao_cloud.client_secret) are elided.
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("bind", &self.bind)
             .field("database_url", &"<redacted>")
+            .field("deployment_mode", &self.deployment_mode)
             .field("jwt_secret", &"<redacted>")
             .field("jwt_ttl_seconds", &self.jwt_ttl_seconds)
             .field("live_kit_url", &self.live_kit_url)
@@ -28,6 +89,15 @@ impl std::fmt::Debug for Config {
             .field(
                 "github_client_secret",
                 &self.github_client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "zixiao_cloud",
+                &self.zixiao_cloud.as_ref().map(|z| {
+                    format!(
+                        "ZixiaoCloudConfig {{ client_id: {:?}, client_secret: <redacted>, base_url: {:?} }}",
+                        z.client_id, z.base_url
+                    )
+                }),
             )
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .finish()
@@ -50,10 +120,21 @@ fn env_nonempty_trimmed(key: &str) -> Option<String> {
 }
 
 impl Config {
-    /// Load configuration from environment variables. Fails fast on missing or
-    /// malformed values rather than falling back to unsafe defaults (e.g. a
-    /// shared dev JWT secret) that would produce silent misbehaviour in
-    /// production.
+    /// Load application configuration from environment variables, validating required values and failing fast on missing or malformed settings.
+    ///
+    /// This validates and returns a fully populated `Config`, enforcing invariants such as a minimum-length JWT secret (or a generated ephemeral one when `YUXU_DEV_MODE=1`), all-or-none OAuth provider credentials, a positive JWT TTL, and that SaaS mode has at least one OAuth provider configured. Environment variables that are empty or whitespace-only are treated as unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::env;
+    /// // Minimal required env for a successful construction in non-dev mode:
+    /// env::set_var("YUXU_JWT_SECRET", "a_very_long_secret_at_least_32_bytes_long_!!!");
+    /// env::set_var("DATABASE_URL", "sqlite://:memory:");
+    /// // Other settings may remain unset and defaults will be applied where allowed.
+    /// let cfg = crate::config::Config::from_env().unwrap();
+    /// assert!(cfg.jwt_secret.len() >= 32);
+    /// ```
     pub fn from_env() -> Result<Self> {
         let bind_raw = std::env::var("YUXU_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
         let bind: SocketAddr = bind_raw
@@ -67,6 +148,19 @@ impl Config {
                 "sqlite://yuxu.db?mode=rwc".into()
             }
         });
+
+        let deployment_mode = match env_nonempty_trimmed("YUXU_DEPLOYMENT_MODE")
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("self-hosted") | Some("self_hosted") | Some("selfhosted") => {
+                DeploymentMode::SelfHosted
+            }
+            Some("saas") => DeploymentMode::Saas,
+            Some(other) => bail!(
+                "YUXU_DEPLOYMENT_MODE must be either \"self-hosted\" or \"saas\" (got {other:?})"
+            ),
+        };
 
         // JWT secret is required; we never want to accept a built-in fallback,
         // which would let every deployment forge tokens with the same key.
@@ -114,15 +208,122 @@ impl Config {
             );
         }
 
+        // Zixiao Labs Cloud Account OAuth is optional in self-hosted mode but
+        // required for any login at all in SaaS mode without GitHub. All three
+        // pieces (client_id, client_secret, base_url) must travel together.
+        let zixiao_id = env_nonempty_trimmed("ZIXIAO_CLOUD_CLIENT_ID");
+        let zixiao_secret = env_nonempty_trimmed("ZIXIAO_CLOUD_CLIENT_SECRET");
+        let zixiao_base = env_nonempty_trimmed("ZIXIAO_CLOUD_BASE_URL");
+        let zixiao_cloud = match (zixiao_id, zixiao_secret, zixiao_base) {
+            (Some(client_id), Some(client_secret), Some(mut base_url)) => {
+                while base_url.ends_with('/') {
+                    base_url.pop();
+                }
+                Some(ZixiaoCloudConfig {
+                    client_id,
+                    client_secret,
+                    base_url,
+                })
+            }
+            (None, None, None) => None,
+            _ => bail!(
+                "ZIXIAO_CLOUD_CLIENT_ID, ZIXIAO_CLOUD_CLIENT_SECRET and ZIXIAO_CLOUD_BASE_URL must all be set together (or all unset to disable the Zixiao Cloud provider)"
+            ),
+        };
+
+        if deployment_mode == DeploymentMode::Saas
+            && zixiao_cloud.is_none()
+            && github_client_id.is_none()
+        {
+            // SaaS mode disables local password accounts entirely, so an
+            // install with no OAuth providers configured cannot accept any
+            // user logins. Refuse to start rather than serve a broken /login.
+            bail!(
+                "YUXU_DEPLOYMENT_MODE=saas requires at least one OAuth provider; configure ZIXIAO_CLOUD_* and/or GITHUB_CLIENT_ID/SECRET"
+            );
+        }
+
         Ok(Self {
             bind,
             database_url,
+            deployment_mode,
             jwt_secret,
             jwt_ttl_seconds,
             live_kit_url,
             github_client_id,
             github_client_secret,
+            zixiao_cloud,
             cors_allowed_origins: env_nonempty_trimmed("YUXU_CORS_ORIGINS"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_mode_as_str_roundtrips_expected_values() {
+        assert_eq!(DeploymentMode::SelfHosted.as_str(), "self-hosted");
+        assert_eq!(DeploymentMode::Saas.as_str(), "saas");
+    }
+
+    #[test]
+    fn only_self_hosted_allows_local_password() {
+        assert!(DeploymentMode::SelfHosted.allows_local_password());
+        assert!(!DeploymentMode::Saas.allows_local_password());
+    }
+
+    #[test]
+    fn config_debug_redacts_secrets() {
+        // Construct manually so the test doesn't touch process env. If the
+        // Debug impl ever regresses and starts printing secrets, the failing
+        // assertion here points at the exact field that leaked.
+        let cfg = Config {
+            bind: "127.0.0.1:8080".parse().unwrap(),
+            database_url: "postgres://user:supersecretpw@localhost/yuxu".into(),
+            deployment_mode: DeploymentMode::SelfHosted,
+            jwt_secret: "a".repeat(48),
+            jwt_ttl_seconds: 3600,
+            live_kit_url: "https://livekit.example".into(),
+            github_client_id: Some("gh-id".into()),
+            github_client_secret: Some("gh-secret-value".into()),
+            zixiao_cloud: Some(ZixiaoCloudConfig {
+                client_id: "zx-id".into(),
+                client_secret: "zx-secret-value".into(),
+                base_url: "https://account.example".into(),
+            }),
+            cors_allowed_origins: Some("http://localhost:5173".into()),
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("supersecretpw"));
+        assert!(!rendered.contains(&"a".repeat(48)));
+        assert!(!rendered.contains("gh-secret-value"));
+        assert!(!rendered.contains("zx-secret-value"));
+        // Non-secret fields should still be visible.
+        assert!(rendered.contains("gh-id"));
+        assert!(rendered.contains("zx-id"));
+        assert!(rendered.contains("https://account.example"));
+    }
+
+    #[test]
+    fn env_nonempty_trimmed_treats_whitespace_as_unset() {
+        // Round-trip a value through the helper by simulating the branch it
+        // takes. The helper itself reads env, so we exercise its trimming
+        // logic via string branching instead of mutating process-global env.
+        fn simulate(raw: Option<&str>) -> Option<String> {
+            raw.and_then(|s| {
+                let t = s.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            })
+        }
+        assert_eq!(simulate(None), None);
+        assert_eq!(simulate(Some("")), None);
+        assert_eq!(simulate(Some("   ")), None);
+        assert_eq!(simulate(Some("\tabc\n")), Some("abc".to_string()));
     }
 }

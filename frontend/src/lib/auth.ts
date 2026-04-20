@@ -3,7 +3,11 @@ import type { UserProfile } from './types';
 const TOKEN_KEY = 'yuxu_token';
 const USER_KEY = 'yuxu_user';
 
-export const LOGIN_URL = import.meta.env.VITE_LOGIN_URL || 'http://localhost:5173/login';
+// Internal login route. The old default pointed at uni-login's frontend on
+// 5173, which doesn't exist in SaaS mode (the console hosts its own login
+// surface). Operators can still override with VITE_LOGIN_URL if they have
+// reason to redirect to a separate SSO frontend.
+export const LOGIN_URL = import.meta.env.VITE_LOGIN_URL || '/login';
 
 export interface Session {
   token: string;
@@ -65,4 +69,21 @@ export function redirectToLogin(returnTo: string = window.location.href): void {
   const url = new URL(LOGIN_URL, window.location.origin);
   url.searchParams.set('return', returnTo);
   window.location.href = url.toString();
+}
+
+// A return target is safe only if it is a same-origin relative path: it must
+// start with a single `/` and not a second `/` or `\` (both of which browsers
+// can resolve against a foreign origin). This rule also rejects schemed URLs
+// like `javascript:…` and `https://evil.com/…`, because their colon sits
+// before any slash, so they fail the leading-`/` check.
+export function isSafeRedirect(target: string | null | undefined): target is string {
+  if (!target) return false;
+  if (target[0] !== '/') return false;
+  if (target[1] === '/' || target[1] === '\\') return false;
+  return true;
+}
+
+/** Return `target` if it passes `isSafeRedirect`, else `/`. */
+export function sanitizeReturnTarget(target: string | null | undefined): string {
+  return isSafeRedirect(target) ? target : '/';
 }
