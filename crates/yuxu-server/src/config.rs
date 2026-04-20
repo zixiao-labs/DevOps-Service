@@ -14,6 +14,16 @@ pub enum DeploymentMode {
 }
 
 impl DeploymentMode {
+    /// String representation of the deployment mode.
+    ///
+    /// The returned string is `"self-hosted"` for `DeploymentMode::SelfHosted` and `"saas"` for `DeploymentMode::Saas`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(DeploymentMode::SelfHosted.as_str(), "self-hosted");
+    /// assert_eq!(DeploymentMode::Saas.as_str(), "saas");
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             DeploymentMode::SelfHosted => "self-hosted",
@@ -21,6 +31,18 @@ impl DeploymentMode {
         }
     }
 
+    /// Indicates whether the deployment permits local username/password accounts.
+    ///
+    /// # Returns
+    ///
+    /// `true` if local username/password accounts are permitted, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(DeploymentMode::SelfHosted.allows_local_password());
+    /// assert!(!DeploymentMode::Saas.allows_local_password());
+    /// ```
     pub fn allows_local_password(self) -> bool {
         matches!(self, DeploymentMode::SelfHosted)
     }
@@ -55,6 +77,67 @@ pub struct Config {
 // database_url which may embed a password, github_client_secret,
 // zixiao_cloud.client_secret) are elided.
 impl std::fmt::Debug for Config {
+    /// Formats the `Config` for debugging while redacting sensitive secrets.
+    
+    ///
+    
+    /// Sensitive fields such as `database_url`, `jwt_secret`, `github_client_secret`, and
+    
+    /// `zixiao_cloud.client_secret` are replaced with `"<redacted>"` in the output.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```
+    
+    /// # use std::net::SocketAddr;
+    
+    /// # use yuxu_server::config::{Config, DeploymentMode, ZixiaoCloudConfig};
+    
+    /// let cfg = Config {
+    
+    ///     bind: "127.0.0.1:8080".parse::<SocketAddr>().unwrap(),
+    
+    ///     database_url: "postgres://user:pass@localhost/db".into(),
+    
+    ///     deployment_mode: DeploymentMode::SelfHosted,
+    
+    ///     jwt_secret: "a".repeat(32),
+    
+    ///     jwt_ttl_seconds: 3600,
+    
+    ///     live_kit_url: "https://livekit.example".into(),
+    
+    ///     github_client_id: None,
+    
+    ///     github_client_secret: None,
+    
+    ///     zixiao_cloud: Some(ZixiaoCloudConfig {
+    
+    ///         client_id: "cid".into(),
+    
+    ///         client_secret: "csecret".into(),
+    
+    ///         base_url: "https://zixiao.example".into(),
+    
+    ///     }),
+    
+    ///     cors_allowed_origins: None,
+    
+    /// };
+    
+    ///
+    
+    /// let s = format!("{:?}", cfg);
+    
+    /// assert!(s.contains("database_url"));
+    
+    /// assert!(s.contains("<redacted>"));
+    
+    /// ```
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("bind", &self.bind)
@@ -98,10 +181,21 @@ fn env_nonempty_trimmed(key: &str) -> Option<String> {
 }
 
 impl Config {
-    /// Load configuration from environment variables. Fails fast on missing or
-    /// malformed values rather than falling back to unsafe defaults (e.g. a
-    /// shared dev JWT secret) that would produce silent misbehaviour in
-    /// production.
+    /// Load application configuration from environment variables, validating required values and failing fast on missing or malformed settings.
+    ///
+    /// This validates and returns a fully populated `Config`, enforcing invariants such as a minimum-length JWT secret (or a generated ephemeral one when `YUXU_DEV_MODE=1`), all-or-none OAuth provider credentials, a positive JWT TTL, and that SaaS mode has at least one OAuth provider configured. Environment variables that are empty or whitespace-only are treated as unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::env;
+    /// // Minimal required env for a successful construction in non-dev mode:
+    /// env::set_var("YUXU_JWT_SECRET", "a_very_long_secret_at_least_32_bytes_long_!!!");
+    /// env::set_var("DATABASE_URL", "sqlite://:memory:");
+    /// // Other settings may remain unset and defaults will be applied where allowed.
+    /// let cfg = crate::config::Config::from_env().unwrap();
+    /// assert!(cfg.jwt_secret.len() >= 32);
+    /// ```
     pub fn from_env() -> Result<Self> {
         let bind_raw = std::env::var("YUXU_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
         let bind: SocketAddr = bind_raw
